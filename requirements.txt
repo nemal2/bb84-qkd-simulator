@@ -1,0 +1,12 @@
+# BB84 QKD Simulator - Python dependencies
+# Tested with Python 3.9 – 3.12
+#
+# Install with:
+#   pip install -r requirements.txt
+
+qiskit>=1.0,<2.0
+qiskit-aer>=0.14,<1.0
+numpy>=1.24
+matplotlib>=3.7
+jupyter>=1.0          # only needed to run the notebook
+ipykernel>=6.0        # only needed to run the notebook
