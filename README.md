@@ -191,6 +191,7 @@ If you use this simulator in academic work, please cite:
   title     = {BB84 QKD Simulator},
   year      = {2026},
   url       = {https://github.com/nemal2/bb84-qkd-simulator},
+  doi       = {10.5281/zenodo.20584084},
   license   = {MIT}
 }
 ```
