@@ -29,7 +29,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 from bb84_config import SimulationConfig, SimulationResult
-from bb84_core   import Alice, Bob, Eve, QuantumChannel, estimate_qber
+from bb84_core   import Alice, Bob, Eve, estimate_qber
+from bb84_noise  import QuantumChannel, NoiseModelType
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -74,6 +75,33 @@ PRESET_SCENARIOS: List[Tuple[str, SimulationConfig]] = [
     ),
 ]
 
+PHASE3_SCENARIOS: List[Tuple[str, SimulationConfig]] = [
+    (
+        "Ideal (no noise)",
+        SimulationConfig(n_qubits=500, seed=42, noise_model=NoiseModelType.IDEAL, label="Ideal"),
+    ),
+    (
+        "Depolarising (p = 0.05)",
+        SimulationConfig(n_qubits=500, seed=42, noise_model=NoiseModelType.DEPOLARIZING, depolar_prob=0.05, label="Depolarising p=0.05"),
+    ),
+    (
+        "Amplitude Damping (T1 = 10 µs)",
+        SimulationConfig(n_qubits=500, seed=42, noise_model=NoiseModelType.AMPLITUDE_DAMPING, t1_ns=10_000.0, gate_time_ns=50.0, label="Amplitude Damping"),
+    ),
+    (
+        "Phase Damping (T2 = 8 µs)",
+        SimulationConfig(n_qubits=500, seed=42, noise_model=NoiseModelType.PHASE_DAMPING, t2_ns=8_000.0, gate_time_ns=50.0, label="Phase Damping"),
+    ),
+    (
+        "Combined T1+T2 (T1=10 µs, T2=8 µs)",
+        SimulationConfig(n_qubits=500, seed=42, noise_model=NoiseModelType.COMBINED, t1_ns=10_000.0, t2_ns=8_000.0, gate_time_ns=50.0, label="Combined T1+T2"),
+    ),
+    (
+        "Fibre Loss (50 km)",
+        SimulationConfig(n_qubits=500, seed=42, noise_model=NoiseModelType.FIBRE_LOSS, channel_length_km=50.0, label="Fibre Loss 50 km"),
+    ),
+]
+
 
 # ──────────────────────────────────────────────────────────────────────
 # SINGLE SIMULATION
@@ -82,6 +110,7 @@ PRESET_SCENARIOS: List[Tuple[str, SimulationConfig]] = [
 def run_simulation(
     config:  SimulationConfig,
     verbose: bool = True,
+    ldpc_reconciler=None,
 ) -> SimulationResult:
     """
     Run one complete BB84 simulation.
@@ -113,10 +142,8 @@ def run_simulation(
     # ── Instantiate parties ───────────────────────────────────────────
     alice   = Alice(config.n_qubits, seed=config.seed)
     bob     = Bob(config.n_qubits,   seed=config.seed)
-    channel = QuantumChannel(
-        noise_enabled=config.noise_enabled,
-        depolar_prob=config.depolar_prob,
-    )
+    loss_rng = random.Random(config.seed if config.seed is not None else None)
+    channel = QuantumChannel.from_config(config, loss_rng=loss_rng)
     eve = Eve(config.eve_intercept_prob, seed=config.seed) if config.eve_present else None
 
     # ── Step 1: Quantum Transmission ─────────────────────────────────
@@ -124,16 +151,19 @@ def run_simulation(
         print(f"\n  [1/4] Quantum Transmission  ({config.n_qubits} qubits)...")
         print(f"        Channel : {channel.description}")
 
+    lost_qubits: set = set()
     for i in range(config.n_qubits):
         if verbose and i % 200 == 0:
             print(f"        ↳ {i}/{config.n_qubits}", end="\r")
         qc = alice.prepare_qubit(i)
         if eve is not None:
             qc = eve.intercept(qc, i, channel)
-        bob.measure(qc, i, channel)
+        bit = bob.measure(qc, i, channel)
+        if bit is None:
+            lost_qubits.add(i)
 
     if verbose:
-        print(f"        ↳ {config.n_qubits}/{config.n_qubits} transmitted ✓   ")
+        print(f"        ↳ {config.n_qubits}/{config.n_qubits} transmitted  ({len(lost_qubits)} lost) ✓   ")
 
     # ── Step 2: Key Sifting ───────────────────────────────────────────
     if verbose:
@@ -142,19 +172,25 @@ def run_simulation(
     matching_indices = [
         i for i in range(config.n_qubits)
         if alice.bases[i] == bob.bases[i]
-        and bob.measured_bits[i] is not None
+        and i not in lost_qubits
     ]
     alice_sifted = alice.sift_key(matching_indices)
     bob_sifted   = bob.sift_key(matching_indices)
     sift_rate    = len(matching_indices) / config.n_qubits
 
     if verbose:
-        print(f"        ↳ {len(matching_indices)} bits retained  "
-              f"({sift_rate:.1%}, expected ~50 %)")
+        print(f"        ↳ {len(matching_indices)} bits retained  ({sift_rate:.1%}, expected ~50 % of arriving qubits)")
 
     # ── Step 3: QBER Estimation ───────────────────────────────────────
     if verbose:
         print(f"\n  [3/4] QBER Estimation  (sample fraction = {config.sample_fraction:.0%})...")
+
+    if len(alice_sifted) == 0:
+        if verbose:
+            print("        ↳ No sifted bits (all photons lost) — skipping QBER.")
+        from bb84_config import QBERResult
+        empty_qber = QBERResult(qber=0.0, errors=0, sample_size=0, security_status="SECURE ok", confidence_low=0.0, confidence_high=1.0)
+        return SimulationResult(config=config, n_transmitted=config.n_qubits, n_sifted=0, sifted_key_rate=0.0, qber_result=empty_qber, alice_final_key=[], bob_final_key=[], key_agreement_rate=0.0, eve_interception_rate=0.0, runtime_seconds=time.time()-start, n_lost=len(lost_qubits))
 
     qber_result = estimate_qber(
         alice_sifted,
@@ -197,6 +233,7 @@ def run_simulation(
         key_agreement_rate=agreement,
         eve_interception_rate=eve_rate,
         runtime_seconds=time.time() - start,
+        n_lost=len(lost_qubits),
     )
 
     if verbose:
@@ -211,6 +248,7 @@ def run_simulation(
 
 def run_comparison(
     scenarios: Optional[List[Tuple[str, SimulationConfig]]] = None,
+    phase3: bool = False,
 ) -> List[SimulationResult]:
     """
     Run a list of scenarios and print a compact comparison table.
@@ -230,26 +268,27 @@ def run_comparison(
     >>> results = run_comparison(PRESET_SCENARIOS)
     """
     if scenarios is None:
-        scenarios = PRESET_SCENARIOS
+        scenarios = PHASE3_SCENARIOS if phase3 else PRESET_SCENARIOS
 
     max_name = max(len(name) for name, _ in scenarios)
     col      = max(max_name + 2, 40)
 
-    print("\n" + "═" * (col + 32))
-    print("  BB84 QKD - MULTI-SCENARIO COMPARISON")
-    print("  University of Ruhuna - Dept. of Computer Engineering")
-    print("═" * (col + 32))
-    print(f"  {'Scenario':<{col}} {'QBER':>6}  {'Key':>5}  Status")
-    print("  " + "─" * (col + 28))
+    print("\n" + "═" * (col + 42))
+    print("  BB84 QKD – MULTI-SCENARIO COMPARISON")
+    print("  University of Ruhuna – Dept. of Computer Engineering")
+    print("═" * (col + 42))
+    print(f"  {'Scenario':<{col}} {'QBER':>6}  {'Key':>5}  {'Lost':>5}  Status")
+    print("  " + "─" * (col + 36))
 
     results: List[SimulationResult] = []
     for name, cfg in scenarios:
         r = run_simulation(cfg, verbose=False)
         results.append(r)
+        lost_str = f"{r.n_lost:>4}" if r.n_lost > 0 else "   –"
         print(f"  {name:<{col}} {r.qber_result.qber * 100:>5.1f}%  "
-              f"{r.key_length:>5}b  {r.qber_result.security_status}")
+              f"{r.key_length:>5}b  {lost_str}   {r.qber_result.security_status}")
 
-    print("═" * (col + 32))
+    print("═" * (col + 42))
     return results
 
 
@@ -258,10 +297,10 @@ def run_comparison(
 # ──────────────────────────────────────────────────────────────────────
 
 def _print_header(config: SimulationConfig) -> None:
-    w = 62
+    w = 66
     print("\n" + "═" * w)
-    print("  BB84 QKD SIMULATOR")
-    print("  University of Ruhuna - Dept. of Computer Engineering")
+    print("  BB84 QKD SIMULATOR  –  Phase 3")
+    print("  University of Ruhuna – Dept. of Computer Engineering")
     print("═" * w)
     print(f"  Label        : {config.label}")
     print(f"  Qubits       : {config.n_qubits}")
@@ -269,22 +308,28 @@ def _print_header(config: SimulationConfig) -> None:
         print(f"  Eve Present  : True  (intercept p = {config.eve_intercept_prob})")
     else:
         print(f"  Eve Present  : False")
-    if config.noise_enabled:
-        print(f"  Noise        : Depolarising  p = {config.depolar_prob}")
+
+    if config.noise_model is not None:
+        print(f"  Noise Model  : {config.noise_model}")
+    elif config.noise_enabled:
+        print(f"  Noise        : Depolarising  p = {config.depolar_prob}  (legacy)")
     else:
         print(f"  Noise        : Ideal (none)")
+
     print(f"  QBER Sample  : {config.sample_fraction:.0%} of sifted key")
     print(f"  Seed         : {config.seed}")
     print("═" * w)
 
 
 def _print_summary(r: SimulationResult) -> None:
-    w = 62
+    w = 66
     qr = r.qber_result
     print(f"\n{'─' * w}")
     print("  RESULT SUMMARY")
     print(f"{'─' * w}")
     print(f"  Transmitted          : {r.n_transmitted} qubits")
+    if r.n_lost > 0:
+        print(f"  Lost (fibre)         : {r.n_lost} qubits  (survival {r.photon_survival_rate:.1%})")
     print(f"  After sifting        : {r.n_sifted} bits  ({r.sifted_key_rate:.1%})")
     print(f"  Final key length     : {r.key_length} bits")
     print(f"  Key generation rate  : {r.key_generation_rate:.4f} bits/qubit")
