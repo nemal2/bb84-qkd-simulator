@@ -2,14 +2,12 @@
 
 A modular, reproducible Python simulator for the **BB84 Quantum Key Distribution protocol** that integrates depolarising channel noise, intercept-resend eavesdropping, and Wilson confidence-interval QBER estimation - deployable without prior Qiskit experience.
 
-**University of Ruhuna - Dept. of Computer Engineering**  
-MIT Licence
 
 ---
 
 ## Features
 
-### Phase 1–2 (Legacy)
+### Phase 1–2 
 - **Alice & Bob** - qubit preparation and measurement in rectilinear / diagonal bases
 - **Eve** - configurable intercept-resend attack (0 – 100 % interception rate)
 - **Depolarising noise** - Qiskit Aer noise model with per-gate error probability
@@ -17,7 +15,7 @@ MIT Licence
 - **Security thresholds** - automatic SECURE / WARNING / ABORT classification
 - **Publication-quality plots** - IEEE-style bar chart and QBER sweep figure
 
-### Phase 3 (NEW)
+### Phase 3 
 - **6 Advanced Noise Models** - Ideal, Depolarizing, Amplitude Damping, Phase Damping, Combined, Fibre Loss
 - **Physical Decoherence Parameters** - T1 (relaxation), T2 (dephasing), gate time, fibre distance
 - **Zero-Noise Extrapolation (ZNE)** - Quantum error mitigation via noise scaling and polynomial extrapolation
